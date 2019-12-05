@@ -57,9 +57,6 @@
 
 #define HC16_KEY_CENTER   KEY_F22
 
-#define HC16_VKEY_2_UP       KEY_KPPLUS
-#define HC16_VKEY_2_DOWN     KEY_KPMINUS
-
 #define HC16_STYLUS_KYE_TYPE 0
 
 #if HC16_STYLUS_KYE_TYPE == 0    // STYLUS BUTTON on pen
@@ -108,8 +105,6 @@ static unsigned short def_keymap[] = {
     HC16_KEY_BOTTOM_5,
     HC16_KEY_BOTTOM_6,
     HC16_KEY_CENTER,
-    HC16_VKEY_2_UP,
-    HC16_VKEY_2_DOWN,
     KEY_RIGHTCTRL,
     KEY_RIGHTALT,
 };
@@ -565,22 +560,6 @@ static void hc16_handle_key_mapping_event(
 static unsigned short hc16_mapping_keys(u16 key_raw, unsigned short** last_key_pp)
 {
     *last_key_pp = &last_key;
-
-    // HC16_KEY_TOP_1,
-    // HC16_KEY_TOP_2,
-    // HC16_KEY_TOP_3,
-    // HC16_KEY_TOP_4,
-    // HC16_KEY_TOP_5,
-    // HC16_KEY_TOP_6,
-    // HC16_KEY_BOTTOM_1,
-    // HC16_KEY_BOTTOM_2,
-    // HC16_KEY_BOTTOM_3,
-    // HC16_KEY_BOTTOM_4,
-    // HC16_KEY_BOTTOM_5,
-    // HC16_KEY_BOTTOM_6,
-    // HC16_KEY_CENTER,
-    // HC16_VKEY_2_UP,
-    // HC16_VKEY_2_DOWN,
 
     switch (key_raw)
     {
