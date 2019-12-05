@@ -63,11 +63,13 @@
 #define HC16_STYLUS_KYE_TYPE 0
 
 #if HC16_STYLUS_KYE_TYPE == 0    // STYLUS BUTTON on pen
+    #define HC16_STYLUS_USE_PEN_KEY
     #define HC16_STYLUS_KEY_DEVICE idev_pen
     #define HC16_STYLUS_KEY_1 BTN_STYLUS
     #define HC16_STYLUS_KEY_2 BTN_STYLUS2
     #define HC16_STYLUS_KEY_SYNC()
 #elif HC16_STYLUS_KYE_TYPE == 1  // MOUSE BUTTON
+    #define HC16_STYLUS_USE_MOUSE_KEY
     #define HC16_STYLUS_KEY_DEVICE idev_keyboard
     #define HC16_STYLUS_KEY_1 BTN_MIDDLE
     #define HC16_STYLUS_KEY_2 BTN_RIGHT
@@ -261,8 +263,11 @@ static int hc16_register_pen(struct hid_device *hdev)
     input_set_capability(idev_pen, EV_ABS, ABS_Y);
     input_set_capability(idev_pen, EV_ABS, ABS_PRESSURE);
     input_set_capability(idev_pen, EV_KEY, BTN_TOOL_PEN);
+
+#ifdef HC16_STYLUS_USE_PEN_KEY
     input_set_capability(idev_pen, EV_KEY, BTN_STYLUS);
     input_set_capability(idev_pen, EV_KEY, BTN_STYLUS2);
+#endif  // HC16_STYLUS_USE_PEN_KEY
 
     input_set_abs_params(idev_pen, ABS_X, 1, MAX_ABS_X, 0, 0);
     input_set_abs_params(idev_pen, ABS_Y, 1, MAX_ABS_Y, 0, 0);
@@ -313,6 +318,11 @@ static int hc16_register_keyboard(struct hid_device *hdev, struct usb_device *us
     input_set_capability(idev_keyboard, EV_MSC, MSC_SCAN);
 
     input_set_capability(idev_keyboard, EV_REL, REL_WHEEL);
+
+#ifdef HC16_STYLUS_USE_MOUSE_KEY
+    input_set_capability(idev_keyboard, EV_KEY, BTN_STYLUS);
+    input_set_capability(idev_keyboard, EV_KEY, BTN_STYLUS2);
+#endif  // HC16_STYLUS_USE_MOUSE_KEY
 
     for (i=0; i<HC16_KeyMapSize; i++)
     {
