@@ -160,7 +160,6 @@ static void hc16_handle_key_mapping_event(
 static unsigned short hc16_mapping_keys(u16 key_raw, unsigned short** last_key_pp);
 
 static void hc16_report_keys(const int keyc, const unsigned short* keys, int s);
-static void __upress_pen(void);
 
 static void hc16_calculate_pen_data(const u8* data, int* x_pos, int* y_pos, int* pressure);
 static void hc16_calculate_mouse_data(const u8* data, int* x_pos, int* y_pos);
@@ -321,8 +320,8 @@ static int hc16_register_keyboard(struct hid_device *hdev, struct usb_device *us
     input_set_capability(idev_keyboard, EV_REL, REL_WHEEL);
 
 #ifdef HC16_STYLUS_USE_MOUSE_KEY
-    input_set_capability(idev_keyboard, EV_KEY, BTN_STYLUS);
-    input_set_capability(idev_keyboard, EV_KEY, BTN_STYLUS2);
+    input_set_capability(idev_keyboard, EV_KEY, BTN_MIDDLE);
+    input_set_capability(idev_keyboard, EV_KEY, BTN_RIGHT);
 #endif  // HC16_STYLUS_USE_MOUSE_KEY
 
     for (i=0; i<HC16_KeyMapSize; i++)
@@ -662,30 +661,6 @@ static void hc16_report_keys(const int keyc, const unsigned short* keys, int s)
     input_sync(idev_keyboard);
 }
 
-static void __upress_pen(void)
-{
-    bool stylus_changed = false;
-
-    if (stylus_pressed)
-    {
-        input_report_key(HC16_STYLUS_KEY_DEVICE, HC16_STYLUS_KEY_1, 0);
-        stylus_pressed = false;
-        stylus_changed = true;
-    }
-
-    if (stylus2_pressed)
-    {
-        input_report_key(HC16_STYLUS_KEY_DEVICE, HC16_STYLUS_KEY_2, 0);
-        stylus2_pressed = false;
-        stylus_changed = true;
-    }
-
-    if (stylus_changed)
-    {
-        input_sync(HC16_STYLUS_KEY_DEVICE);
-    }
-}
-
 static void hc16_calculate_pen_data(const u8* data, int* x_pos, int* y_pos, int* pressure)
 {
     *x_pos           = data[3] * 0xFF + data[2];
@@ -823,13 +798,6 @@ static void hc16_relative_pen_get_rel_pos(int abs_x, int abs_y, int* rel_x, int*
     *rel_y = dy / REL_PEN_DIV;
 }
 
-#ifdef CONFIG_PM
-static int uclogic_resume(struct hid_device *hdev)
-{
-	return 0;
-}
-#endif
-
 static void __close_keyboard(struct input_dev** keyboard_p)
 {
     struct input_dev* keyboard = *keyboard_p;
@@ -882,10 +850,6 @@ static struct hid_driver hc16_driver = {
     .probe          = hc16_probe,
     .remove         = hc16_remove,
     .raw_event      = hc16_raw_event,
-#ifdef CONFIG_PM
-    .resume	        = uclogic_resume,
-    .reset_resume   = uclogic_resume,
-#endif
 };
 module_hid_driver(hc16_driver);
 
