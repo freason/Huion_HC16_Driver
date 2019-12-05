@@ -125,6 +125,7 @@ static bool stylus2_pressed = false;
 
 static unsigned short last_key = 0;
 static unsigned short last_vkey = 0;
+static int last_wheel = 0;
 
 
 static relative_pen_t rel_pen_data = {
@@ -387,24 +388,25 @@ static int hc16_raw_event(struct hid_device *hdev, struct hid_report *report, u8
 
 static void hc16_handle_wheel_event(u8 b_key_raw)
 {
-    int last_wheel = 0;
     int d = (int)b_key_raw - last_wheel;
+    int t_last_wheel = last_wheel;
 
-    if (d > 0x0c / 2)
+    if (abs(d) > 0x0c / 2)
     {
-      d -= 0x0c;
+      int s = d >= 0 ? 1 : -1;
+      d -= s * 0x0c;
     }
 
-    if (d < -0x0c / 2)
+    last_wheel = (int)b_key_raw;
+
+    if (b_key_raw == 0 || t_last_wheel == 0)
     {
-      d += 0x0c;
+      return;
     }
 
     input_report_rel(idev_keyboard, REL_WHEEL, d);
 
     input_sync(idev_keyboard);
-
-    last_wheel = (int)b_key_raw;
 }
 
 static void hc16_handle_key_event(u16 key_raw)
