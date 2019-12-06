@@ -136,9 +136,7 @@ static relative_pen_t rel_pen_data = {
 
 static int hc16_probe(struct hid_device *hdev, const struct hid_device_id *id);
 
-static int hc16_prepare_pens(struct hid_device *hdev);
 static int hc16_register_pen(struct hid_device *hdev);
-static int hc16_register_relative_pen(struct hid_device *hdev);
 static int hc16_register_keyboard(struct hid_device *hdev, struct usb_device *usb_dev);
 
 static int hc16_raw_event(struct hid_device *hdev, struct hid_report *report, u8 *data, int size);
@@ -157,7 +155,6 @@ static unsigned short hc16_mapping_keys(u16 key_raw, unsigned short** last_key_p
 static void hc16_report_keys(const int keyc, const unsigned short* keys, int s);
 
 static void hc16_calculate_pen_data(const u8* data, int* x_pos, int* y_pos, int* pressure);
-static void hc16_calculate_mouse_data(const u8* data, int* x_pos, int* y_pos);
 
 static void hc16_relative_pen_toggle(void);
 static bool hc16_relative_pen_is_enabled(void);
@@ -248,7 +245,7 @@ static int hc16_register_pen(struct hid_device *hdev)
 
     idev_pen->name       = "Huion HC16 Tablet";
     idev_pen->id.bustype = BUS_USB;
-    idev_pen->id.vendor  = 0x56a;
+    idev_pen->id.vendor  = 0x056a;
     idev_pen->id.version = 0;
     idev_pen->dev.parent = &hdev->dev;
 
@@ -630,7 +627,6 @@ static unsigned short hc16_mapping_keys(u16 key_raw, unsigned short** last_key_p
 static void hc16_report_keys(const int keyc, const unsigned short* keys, int s)
 {
     int i = 0;
-    unsigned short rkey = *(keys + keyc - 1);
 
     for (i = 0; i < keyc; ++i)
     {
@@ -645,12 +641,6 @@ static void hc16_calculate_pen_data(const u8* data, int* x_pos, int* y_pos, int*
     *x_pos           = data[3] * 0xFF + data[2];
     *y_pos           = data[5] * 0xFF + data[4];
     *pressure        = data[7] * 0xFF + data[6];
-}
-
-static void hc16_calculate_mouse_data(const u8* data, int* x_pos, int* y_pos)
-{
-    *x_pos           = data[3] * 0xFF + data[2];
-    *y_pos           = data[5] * 0xFF + data[4];
 }
 
 static void hc16_relative_pen_toggle(void)
