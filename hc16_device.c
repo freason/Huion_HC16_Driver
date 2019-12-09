@@ -57,23 +57,10 @@
 
 #define HC16_KEY_CENTER   KEY_F22
 
-#define HC16_STYLUS_KYE_TYPE 0
-
-#if HC16_STYLUS_KYE_TYPE == 0    // STYLUS BUTTON on pen
-    #define HC16_STYLUS_USE_PEN_KEY
-    #define HC16_STYLUS_KEY_DEVICE idev_pen
-    #define HC16_STYLUS_KEY_1 BTN_STYLUS
-    #define HC16_STYLUS_KEY_2 BTN_STYLUS2
-    #define HC16_STYLUS_KEY_SYNC()
-#elif HC16_STYLUS_KYE_TYPE == 1  // MOUSE BUTTON
-    #define HC16_STYLUS_USE_MOUSE_KEY
-    #define HC16_STYLUS_KEY_DEVICE idev_keyboard
-    #define HC16_STYLUS_KEY_1 BTN_MIDDLE
-    #define HC16_STYLUS_KEY_2 BTN_RIGHT
-    #define HC16_STYLUS_KEY_SYNC() input_sync(idev_keyboard)
-#else
-#error "unknown stylus key type"
-#endif
+struct hc16_devic_sc {
+    struct input_dev *input;
+    unsigned long quirks;
+};
 
 typedef unsigned short (*hc16_key_mapping_func_t)(u16 key_raw, unsigned short** last_key_pp);
 
@@ -91,6 +78,11 @@ typedef struct __tag_relative_pen_t
     u64 last_jiffies;
 } relative_pen_t;
 
+typedef struct __tag_hc16_device_t {
+    struct input_dev* pen;
+    struct input_dev* pad;
+} hc16_device_t;
+
 static unsigned short def_keymap[] = {
     HC16_KEY_TOP_1,
     HC16_KEY_TOP_2,
@@ -107,6 +99,16 @@ static unsigned short def_keymap[] = {
     HC16_KEY_CENTER,
     KEY_RIGHTCTRL,
     KEY_RIGHTALT,
+};
+
+static const unsigned int HC16_HwConnMasks[2] = {
+#ifdef USE_STANDALONE_INPUT_DEVICE
+    HID_CONNECT_HIDRAW, // for keyboard
+    HID_CONNECT_HIDRAW  // for pen
+#else   // no USE_STANDALONE_INPUT_DEVICE
+    HID_CONNECT_HIDRAW, // for keyboard
+    HID_CONNECT_DEFAULT  // for pen
+#endif  // USE_STANDALONE_INPUT_DEVICE
 };
 
 static const int HC16_KeyMapSize = sizeof(def_keymap) / sizeof(def_keymap[0]);
@@ -136,23 +138,37 @@ static relative_pen_t rel_pen_data = {
 
 static int hc16_probe(struct hid_device *hdev, const struct hid_device_id *id);
 
-static int hc16_register_pen(struct hid_device *hdev);
-static int hc16_register_keyboard(struct hid_device *hdev, struct usb_device *usb_dev);
-
 static int hc16_raw_event(struct hid_device *hdev, struct hid_report *report, u8 *data, int size);
 
-static void hc16_handle_wheel_event(u8 b_key_raw);
-static void hc16_handle_key_event(u16 key_raw);
-static void hc16_handle_pen_event(u8 b_key_raw, int x_pos, int y_pos, int pressure);
+static int hc16_input_mapping(struct hid_device *hdev,
+    struct hid_input *hi, 
+    struct hid_field *field,
+    struct hid_usage *usage, 
+    unsigned long **bit, 
+    int *max);
+
+static int hc16_input_configured(struct hid_device *hdev, struct hid_input *hi);
+
+static int hc16_register_pen(struct hid_device *hdev);
+static int hc16_register_keyboard(struct hid_device *hdev, struct usb_device *usb_dev, bool usedNewName);
+static void hc16_read_keyboard_strings(struct usb_device *usb_dev);
+
+static void hc16_config_pen(struct input_dev* pen);
+static void hc16_config_keyboard(struct input_dev* keyboard);
+
+static void hc16_handle_wheel_event(struct input_dev* input, u8 b_key_raw);
+static void hc16_handle_key_event(struct input_dev* input, u16 key_raw);
+static void hc16_handle_pen_event(struct input_dev* input, u8 b_key_raw, int x_pos, int y_pos, int pressure);
 
 static void hc16_handle_key_mapping_event(
+    struct input_dev* input, 
     unsigned short keys[],
     int keyc,
     u16 key_raw,
     hc16_key_mapping_func_t kmp_func);
 static unsigned short hc16_mapping_keys(u16 key_raw, unsigned short** last_key_pp);
 
-static void hc16_report_keys(const int keyc, const unsigned short* keys, int s);
+static void hc16_report_keys(struct input_dev* input, const int keyc, const unsigned short* keys, int s);
 
 static void hc16_calculate_pen_data(const u8* data, int* x_pos, int* y_pos, int* pressure);
 
@@ -172,17 +188,22 @@ static int hc16_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
     int rc = 0;
     struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
-    struct usb_device *usb_dev = interface_to_usbdev(intf);
-    unsigned long quirks = id->driver_data;
+    unsigned long driver_data = id->driver_data;
     int if_number = intf->cur_altsetting->desc.bInterfaceNumber;
+    // struct hc16_devic_sc *hc16 = NULL;
+    unsigned int hw_start_mask = HC16_HwConnMasks[if_number];
 
+    
     hdev->quirks |= HID_QUIRK_MULTI_INPUT;
-    hdev->quirks |= HID_QUIRK_NO_EMPTY_INPUT;
+    // hdev->quirks |= HID_QUIRK_NO_EMPTY_INPUT;
 
+    DPRINT("hc16 device hdev=%p, detected if=%d, product=%x", hdev, if_number, id->product);
+    
+    // hc16 = devm_kzalloc(&hdev->dev, sizeof(*hc16), GFP_KERNEL);
+    // hid_set_drvdata(hdev, hc16);
+    
     if (id->product == USB_DEVICE_ID_HUION_HC16_TABLET) {
-        DPRINT("hc16 device detected if=%d", if_number);
-
-        hid_set_drvdata(hdev, (void *)quirks);
+        hid_set_drvdata(hdev, (void *)driver_data);
 
         rc = hid_parse(hdev);
         if (rc)
@@ -190,20 +211,16 @@ static int hc16_probe(struct hid_device *hdev, const struct hid_device_id *id)
             hid_err(hdev, "parse failed\n");
             return rc;
         }
-
-        rc = hid_hw_start(hdev, HID_CONNECT_HIDRAW);
+        
+        rc = hid_hw_start(hdev, hw_start_mask);
         if (rc)
         {
             hid_err(hdev, "hw start failed\n");
             return rc;
         }
+        
+        DPRINT("hc16_probe: if: %d, :%x", if_number, hdev->claimed);
 
-        rc = hid_hw_open(hdev);
-        if (rc)
-        {
-            hid_err(hdev, "cannot open hidraw\n");
-            return rc;
-        }
 
         if (if_number == 1)
         {
@@ -211,12 +228,13 @@ static int hc16_probe(struct hid_device *hdev, const struct hid_device_id *id)
         }
         else if (if_number == 0)
         {
-            rc = hc16_register_keyboard(hdev, usb_dev);
+            struct usb_device *usb_dev = interface_to_usbdev(intf);
+            rc = hc16_register_keyboard(hdev, usb_dev, false);
         }
 
-        if (rc == 0)
+        if (rc != 0)
         {
-            return rc;
+            goto error_stop_hw;
         }
 
         DPRINT("hc16 device ok");
@@ -228,108 +246,10 @@ static int hc16_probe(struct hid_device *hdev, const struct hid_device_id *id)
     }
 
     return 0;
-}
-
-static int hc16_register_pen(struct hid_device *hdev)
-{
-    int rc;
-
-    idev_pen = input_allocate_device();
-    if (idev_pen == NULL)
-    {
-        hid_err(hdev, "failed to allocate input device for pen\n");
-        return -ENOMEM;
-    }
-
-    input_set_drvdata(idev_pen, hdev);
-
-    idev_pen->name       = "Huion HC16 Tablet";
-    idev_pen->id.bustype = BUS_USB;
-    idev_pen->id.vendor  = 0x056a;
-    idev_pen->id.version = 0;
-    idev_pen->dev.parent = &hdev->dev;
-
-    set_bit(EV_REP, idev_pen->evbit);
-
-    input_set_capability(idev_pen, EV_ABS, ABS_X);
-    input_set_capability(idev_pen, EV_ABS, ABS_Y);
-    input_set_capability(idev_pen, EV_ABS, ABS_PRESSURE);
-    input_set_capability(idev_pen, EV_KEY, BTN_TOOL_PEN);
-
-#ifdef HC16_STYLUS_USE_PEN_KEY
-    input_set_capability(idev_pen, EV_KEY, BTN_STYLUS);
-    input_set_capability(idev_pen, EV_KEY, BTN_STYLUS2);
-#endif  // HC16_STYLUS_USE_PEN_KEY
-
-    input_set_abs_params(idev_pen, ABS_X, 1, MAX_ABS_X, 0, 0);
-    input_set_abs_params(idev_pen, ABS_Y, 1, MAX_ABS_Y, 0, 0);
-    input_set_abs_params(idev_pen, ABS_PRESSURE, 1, MAX_ABS_PRESSURE, 0, 0);
-
-    rc = input_register_device(idev_pen);
-    if (rc)
-    {
-        hid_err(hdev, "error registering the input device for pen\n");
-        input_free_device(idev_pen);
-        return rc;
-    }
-    return 0;
-}
-
-static int hc16_register_keyboard(struct hid_device *hdev, struct usb_device *usb_dev)
-{
-    int rc = 0;
-    int i = 0;
-    char buf[CONFIG_BUF_SIZE];
-    rc = usb_string(usb_dev, 0x02, buf, CONFIG_BUF_SIZE);
-    if (rc > 0) DPRINT("String(0x02) = %s", buf);
-
-    rc = usb_string(usb_dev, 0xc9, buf, 256);
-    if (rc > 0) DPRINT("String(0xc9) = %s", buf);
-
-    rc = usb_string(usb_dev, 0xc8, buf, 256);
-    if (rc > 0) DPRINT("String(0xc8) = %s", buf);
-
-    rc = usb_string(usb_dev, 0xca, buf, 256);
-    if (rc > 0) DPRINT("String(0xca) = %s", buf);
-
-    idev_keyboard = input_allocate_device();
-    if (idev_keyboard == NULL)
-    {
-        hid_err(hdev, "failed to allocate input device [kb]\n");
-        return -ENOMEM;
-    }
-
-    idev_keyboard->name                 = "Huion HC16 Keyboard";
-    idev_keyboard->id.bustype           = BUS_USB;
-    idev_keyboard->id.vendor            = 0x05b4;
-    idev_keyboard->id.version           = 0;
-    idev_keyboard->keycode              = def_keymap;
-    idev_keyboard->keycodemax           = HC16_KeyMapSize;
-    idev_keyboard->keycodesize          = sizeof(def_keymap[0]);
-
-    input_set_capability(idev_keyboard, EV_MSC, MSC_SCAN);
-
-    input_set_capability(idev_keyboard, EV_REL, REL_WHEEL);
-
-#ifdef HC16_STYLUS_USE_MOUSE_KEY
-    input_set_capability(idev_keyboard, EV_KEY, BTN_MIDDLE);
-    input_set_capability(idev_keyboard, EV_KEY, BTN_RIGHT);
-#endif  // HC16_STYLUS_USE_MOUSE_KEY
-
-    for (i=0; i<HC16_KeyMapSize; i++)
-    {
-        input_set_capability(idev_keyboard, EV_KEY, def_keymap[i]);
-    }
-
-    rc = input_register_device(idev_keyboard);
-    if (rc)
-    {
-        hid_err(hdev, "error registering the input device [kb]\n");
-        input_free_device(idev_keyboard);
-        return rc;
-    }
-
-    return 0;
+    
+error_stop_hw:
+    hid_hw_stop(hdev);
+    return rc;
 }
 
 static int hc16_raw_event(struct hid_device *hdev, struct hid_report *report, u8 *data, int size)
@@ -349,26 +269,26 @@ static int hc16_raw_event(struct hid_device *hdev, struct hid_report *report, u8
             case 0x80:  // pen
             {
                 hc16_calculate_pen_data(data, &x_pos, &y_pos, &pressure);
-                hc16_handle_pen_event(data[1], x_pos, y_pos, pressure);
-                return 0;
+                hc16_handle_pen_event(idev_pen, data[1], x_pos, y_pos, pressure);
+                return 1;
             }
             case 0xE0:  // key
             {
                 if (data[2] == 0x01 && data[3] == 0x01)
                 {
                     u16 key = data[4] << 8 | data[5];
-                    hc16_handle_key_event(key);
+                    hc16_handle_key_event(idev_keyboard, key);
                 }
 
-                return 0;
+                return 1;
             }
             case 0xF0:  // wheel
             {
                 if (data[2] == 0x01 && data[3] == 0x01)
                 {
-                    hc16_handle_wheel_event(data[5]);
+                    hc16_handle_wheel_event(idev_keyboard, data[5]);
                 }
-                return 0;
+                return 1;
             }
             default:;
         }
@@ -377,7 +297,206 @@ static int hc16_raw_event(struct hid_device *hdev, struct hid_report *report, u8
     return 0;
 }
 
-static void hc16_handle_wheel_event(u8 b_key_raw)
+static int hc16_input_mapping(struct hid_device *hdev,
+    struct hid_input *hi, 
+    struct hid_field *field,
+    struct hid_usage *usage, 
+    unsigned long **bit, 
+    int *max)
+{
+    DPRINT("hc16_input_mapping: app: %d, usage{hid: %d, code: %d, type: %d}", 
+           field->application, 
+           usage->hid,
+           usage->code,
+           usage->type
+          );
+    return 0;
+}
+
+static int hc16_input_configured(struct hid_device *hdev, struct hid_input *hi)
+{
+    struct hid_field* field = NULL;
+    
+    DPRINT("hc16_input_configured");
+    
+    field = hi->report->field[0];
+    
+    // HID_GD_KEYBOARD, HID_GD_MOUSE, HID_GD_KEYPAD will be ignored
+    switch (field->application) 
+    {
+    case HID_DG_PEN:
+        hi->input->name = "Huion HC16 Pen";
+        idev_pen = hi->input;
+        hc16_config_pen(hi->input);
+        DPRINT("hc16_input_configured: Pen");
+        break;
+    default:
+        DPRINT("hc16_input_configured unexpected: %d", field->application);
+    }
+
+    return 0;
+}
+
+static int hc16_register_pen(struct hid_device *hdev)
+{
+#ifdef USE_STANDALONE_INPUT_DEVICE
+    int rc;
+    rc = hid_hw_open(hdev);
+    if (rc)
+    {
+        hid_err(hdev, "hc16_register_pen: cannot open hidraw\n");
+        return rc;
+    }
+
+    idev_pen = input_allocate_device();
+    if (idev_pen == NULL)
+    {
+        hid_err(hdev, "failed to allocate input device for pen\n");
+        return -ENOMEM;
+    }
+
+    input_set_drvdata(idev_pen, hdev);
+
+    idev_pen->name       = "Huion HC16 Tablet Pen";
+    idev_pen->id.bustype = BUS_USB;
+    idev_pen->id.vendor  = 0x056a;
+    idev_pen->id.version = 0;
+    idev_pen->dev.parent = &hdev->dev;
+
+    hc16_config_pen(idev_pen);
+
+    rc = input_register_device(idev_pen);
+    if (rc)
+    {
+        hid_err(hdev, "error registering the input device for pen\n");
+        input_free_device(idev_pen);
+        return rc;
+    }
+#else   // no USE_STANDALONE_INPUT_DEVICE
+    struct hid_report *report;
+    
+    if (!(hdev->claimed & HID_CLAIMED_INPUT))
+    {
+        return -ENODEV;
+    }
+    
+    report = hid_register_report(hdev, HID_INPUT_REPORT, 0x0a, 0);
+    
+    if (!report) {
+        hid_err(hdev, "unable to register touch report\n");
+        return -ENOMEM;
+    }
+#endif  // USE_STANDALONE_INPUT_DEVICE
+    return 0;
+}
+
+static int hc16_register_keyboard(struct hid_device *hdev, struct usb_device *usb_dev, bool usedNewName)
+{
+    int rc = 0;
+    rc = hid_hw_open(hdev);
+    if (rc)
+    {
+        hid_err(hdev, "hc16_register_pen: cannot open hidraw\n");
+        return rc;
+    }
+    
+    hc16_read_keyboard_strings(usb_dev);
+
+    idev_keyboard = input_allocate_device();
+    if (idev_keyboard == NULL)
+    {
+        hid_err(hdev, "failed to allocate input device [kb]\n");
+        return -ENOMEM;
+    }
+    
+    input_set_drvdata(idev_keyboard, hdev);
+
+    idev_keyboard->name = "Huion HC16 Tablet Keyboard";
+    if (usedNewName)
+    {
+        idev_keyboard->id.bustype = BUS_USB;
+        idev_keyboard->id.vendor  = 0x056a;
+        idev_keyboard->id.version = 0;
+        idev_keyboard->dev.parent = &hdev->dev;
+    }
+    else
+    {
+        idev_keyboard->id.bustype = hdev->bus;
+        idev_keyboard->id.vendor  = hdev->vendor;
+        idev_keyboard->id.version = hdev->product;
+        idev_keyboard->dev.parent = &hdev->dev;
+    }
+
+    hc16_config_keyboard(idev_keyboard);
+
+    rc = input_register_device(idev_keyboard);
+    if (rc)
+    {
+        hid_err(hdev, "error registering the input device [kb]\n");
+        input_free_device(idev_keyboard);
+        return rc;
+    }
+
+    return 0;
+}
+
+static void hc16_read_keyboard_strings(struct usb_device *usb_dev)
+{
+    int rc = 0;
+    char buf[CONFIG_BUF_SIZE];
+    rc = usb_string(usb_dev, 0x02, buf, CONFIG_BUF_SIZE);
+    if (rc > 0) DPRINT("String(0x02) = %s", buf);
+
+    rc = usb_string(usb_dev, 0xc9, buf, 256);
+    if (rc > 0) DPRINT("String(0xc9) = %s", buf);
+
+    rc = usb_string(usb_dev, 0xc8, buf, 256);
+    if (rc > 0) DPRINT("String(0xc8) = %s", buf);
+
+    rc = usb_string(usb_dev, 0xca, buf, 256);
+    if (rc > 0) DPRINT("String(0xca) = %s", buf);
+}
+
+
+static void hc16_config_pen(struct input_dev* pen)
+{
+    __clear_bit(BTN_LEFT, pen->keybit);
+    __clear_bit(BTN_RIGHT, pen->keybit);
+    __clear_bit(BTN_MIDDLE, pen->keybit);
+    
+    set_bit(EV_REP, pen->evbit);
+
+    input_set_capability(pen, EV_ABS, ABS_X);
+    input_set_capability(pen, EV_ABS, ABS_Y);
+    input_set_capability(pen, EV_ABS, ABS_PRESSURE);
+    input_set_capability(pen, EV_KEY, BTN_TOOL_PEN);
+
+    input_set_capability(pen, EV_KEY, BTN_STYLUS);
+    input_set_capability(pen, EV_KEY, BTN_STYLUS2);
+
+    input_set_abs_params(pen, ABS_X, 0, MAX_ABS_X, 0, 0);
+    input_set_abs_params(pen, ABS_Y, 0, MAX_ABS_Y, 0, 0);
+    input_set_abs_params(pen, ABS_PRESSURE, 0, MAX_ABS_PRESSURE, 0, 0);
+}
+
+static void hc16_config_keyboard(struct input_dev* keyboard)
+{
+    int i = 0;
+    keyboard->keycode              = def_keymap;
+    keyboard->keycodemax           = HC16_KeyMapSize;
+    keyboard->keycodesize          = sizeof(def_keymap[0]);
+
+    input_set_capability(keyboard, EV_MSC, MSC_SCAN);
+
+    input_set_capability(keyboard, EV_REL, REL_WHEEL);
+
+    for (i=0; i<HC16_KeyMapSize; i++)
+    {
+        input_set_capability(keyboard, EV_KEY, def_keymap[i]);
+    }
+}
+
+static void hc16_handle_wheel_event(struct input_dev* input, u8 b_key_raw)
 {
     int d = (int)b_key_raw - last_wheel;
     int t_last_wheel = last_wheel;
@@ -395,12 +514,12 @@ static void hc16_handle_wheel_event(u8 b_key_raw)
       return;
     }
 
-    input_report_rel(idev_keyboard, REL_WHEEL, d);
+    input_report_rel(input, REL_WHEEL, d);
 
-    input_sync(idev_keyboard);
+    input_sync(input);
 }
 
-static void hc16_handle_key_event(u16 key_raw)
+static void hc16_handle_key_event(struct input_dev* input, u16 key_raw)
 {
     unsigned short keys[] = {
         KEY_RIGHTCTRL,
@@ -409,10 +528,10 @@ static void hc16_handle_key_event(u16 key_raw)
     };
     int keyc = sizeof(keys) / sizeof(keys[0]);
 
-    hc16_handle_key_mapping_event(keys, keyc, key_raw, hc16_mapping_keys);
+    hc16_handle_key_mapping_event(input, keys, keyc, key_raw, hc16_mapping_keys);
 }
 
-static void hc16_handle_pen_event(u8 b_key_raw, int x_pos, int y_pos, int pressure)
+static void hc16_handle_pen_event(struct input_dev* input, u8 b_key_raw, int x_pos, int y_pos, int pressure)
 {
     int rpt_x = x_pos;
     int rpt_y = y_pos;
@@ -421,37 +540,33 @@ static void hc16_handle_pen_event(u8 b_key_raw, int x_pos, int y_pos, int pressu
     bool stylus1Pressed = b_key_raw & 0x02;
     bool stylus2Pressed = b_key_raw & 0x04;
 
-    bool stylusChanged = false;
-
     if (penPressed)
     {
         pen_pressed = true;
-        input_report_key(idev_pen, BTN_TOOL_PEN, 1);
-        input_report_abs(idev_pen, ABS_PRESSURE, pressure);
+        input_report_key(input, BTN_TOOL_PEN, 1);
+        input_report_abs(input, ABS_PRESSURE, pressure);
     }
     else
     {
         pen_pressed = false;
-        input_report_key(idev_pen, BTN_TOOL_PEN, 0);
-        input_report_abs(idev_pen, ABS_PRESSURE, 0);
+        input_report_key(input, BTN_TOOL_PEN, 0);
+        input_report_abs(input, ABS_PRESSURE, 0);
     }
 
     if (stylus1Pressed)
     {
         if (!stylus_pressed)
         {
-            input_report_key(HC16_STYLUS_KEY_DEVICE, HC16_STYLUS_KEY_1, 1);
+            input_report_key(input, BTN_STYLUS, 1);
             stylus_pressed = true;
-            stylusChanged = true;
         }
     }
     else
     {
         if (stylus_pressed)
         {
-            input_report_key(HC16_STYLUS_KEY_DEVICE, HC16_STYLUS_KEY_1, 0);
+            input_report_key(input, BTN_STYLUS, 0);
             stylus_pressed = false;
-            stylusChanged = true;
         }
     }
 
@@ -459,24 +574,17 @@ static void hc16_handle_pen_event(u8 b_key_raw, int x_pos, int y_pos, int pressu
     {
         if (!stylus2_pressed)
         {
-            input_report_key(HC16_STYLUS_KEY_DEVICE, HC16_STYLUS_KEY_2, 1);
+            input_report_key(input, BTN_STYLUS2, 1);
             stylus2_pressed = true;
-            stylusChanged = true;
         }
     }
     else
     {
         if (stylus2_pressed)
         {
-            input_report_key(HC16_STYLUS_KEY_DEVICE, HC16_STYLUS_KEY_2, 0);
+            input_report_key(input, BTN_STYLUS2, 0);
             stylus2_pressed = false;
-            stylusChanged = true;
         }
-    }
-
-    if (stylusChanged)
-    {
-        HC16_STYLUS_KEY_SYNC();
     }
 
     if(hc16_relative_pen_is_enabled())
@@ -497,12 +605,13 @@ static void hc16_handle_pen_event(u8 b_key_raw, int x_pos, int y_pos, int pressu
 
     DPRINT_DEEP("sensors: x=%08d y=%08d pressure=%08d", rpt_x, rpt_y, pressure);
 
-    input_report_abs(idev_pen, ABS_X, rpt_x);
-    input_report_abs(idev_pen, ABS_Y, rpt_y);
-    input_sync(idev_pen);
+    input_report_abs(input, ABS_X, rpt_x);
+    input_report_abs(input, ABS_Y, rpt_y);
+    input_sync(input);
 }
 
 static void hc16_handle_key_mapping_event(
+    struct input_dev* input, 
     unsigned short keys[],
     int keyc,
     u16 key_raw,
@@ -537,14 +646,14 @@ static void hc16_handle_key_mapping_event(
         if (t_last_key != 0 && t_last_key != new_key && value != 0)
         {
             *rkey_p = t_last_key;
-            hc16_report_keys(keyc, keys, 0);
+            hc16_report_keys(input, keyc, keys, 0);
         }
 
         if (new_key != KEY_UNKNOWN && new_key != 0)
         {
             *rkey_p = new_key;
             *last_key_p = new_key;
-            hc16_report_keys(keyc, keys, value);
+            hc16_report_keys(input, keyc, keys, value);
         }
 
         if (value == 0)
@@ -624,16 +733,16 @@ static unsigned short hc16_mapping_keys(u16 key_raw, unsigned short** last_key_p
     }
 }
 
-static void hc16_report_keys(const int keyc, const unsigned short* keys, int s)
+static void hc16_report_keys(struct input_dev* input, const int keyc, const unsigned short* keys, int s)
 {
     int i = 0;
 
     for (i = 0; i < keyc; ++i)
     {
-        input_report_key(idev_keyboard, keys[i], s);
+        input_report_key(input, keys[i], s);
     }
 
-    input_sync(idev_keyboard);
+    input_sync(input);
 }
 
 static void hc16_calculate_pen_data(const u8* data, int* x_pos, int* y_pos, int* pressure)
@@ -767,6 +876,7 @@ static void hc16_relative_pen_get_rel_pos(int abs_x, int abs_y, int* rel_x, int*
     *rel_y = dy / REL_PEN_DIV;
 }
 
+#ifdef USE_STANDALONE_INPUT_DEVICE
 static void __close_keyboard(struct input_dev** keyboard_p)
 {
     struct input_dev* keyboard = *keyboard_p;
@@ -792,9 +902,11 @@ static void __close_pad(struct input_dev** pen_p)
         DPRINT("HC16 tab unregistered");
     }
 }
+#endif  // USE_STANDALONE_INPUT_DEVICE
 
 void hc16_remove(struct hid_device *dev)
 {
+#ifdef USE_STANDALONE_INPUT_DEVICE
     struct usb_interface *intf = to_usb_interface(dev->dev.parent);
     if (intf->cur_altsetting->desc.bInterfaceNumber == 0) {
         __close_keyboard(&idev_keyboard);
@@ -802,10 +914,11 @@ void hc16_remove(struct hid_device *dev)
         __close_pad(&idev_pen);
     }
     hid_hw_close(dev);
+#endif  // USE_STANDALONE_INPUT_DEVICE
     hid_hw_stop(dev);
 }
 
-static const struct hid_device_id hc16_device[] = {
+static const struct hid_device_id hc16_ids[] = {
     {
       HID_USB_DEVICE(USB_VENDOR_ID_HUION, USB_DEVICE_ID_HUION_HC16_TABLET),
       .driver_data = (kernel_ulong_t)NULL,
@@ -815,10 +928,13 @@ static const struct hid_device_id hc16_device[] = {
 
 static struct hid_driver hc16_driver = {
     .name           = MODULENAME,
-    .id_table       = hc16_device,
+    .id_table       = hc16_ids,
     .probe          = hc16_probe,
     .remove         = hc16_remove,
     .raw_event      = hc16_raw_event,
+    .input_mapping      = hc16_input_mapping,
+    .input_configured   = hc16_input_configured,
+    // .report_fixup       = hc16_report_fixup,
 };
 module_hid_driver(hc16_driver);
 
@@ -827,4 +943,4 @@ MODULE_DESCRIPTION("Huion HC16 device driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION("1.0.0");
 
-MODULE_DEVICE_TABLE(hid, hc16_device);
+MODULE_DEVICE_TABLE(hid, hc16_ids);
